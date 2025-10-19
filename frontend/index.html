@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ducx Private Chat</title>
+  <style>
+    /* Base styling */
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #0f2027, #203a43, #2c5364);
+      font-family: "Inter", sans-serif;
+      color: #fff;
+      text-align: center;
+      overflow: hidden;
+    }
+
+    h1 {
+      font-size: 2rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    }
+
+    /* Control box */
+    #controls {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 1.5rem 2rem;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      margin-bottom: 2rem;
+      transition: 0.3s ease;
+    }
+
+    #controls:hover {
+      transform: scale(1.02);
+    }
+
+    #controls input {
+      width: 240px;
+      padding: 0.6rem 0.8rem;
+      border-radius: 10px;
+      border: none;
+      outline: none;
+      margin-bottom: 1rem;
+      font-size: 1rem;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.15);
+      color: #fff;
+    }
+
+    #controls input::placeholder {
+      color: #ccc;
+    }
+
+    #controls button {
+      margin: 0.3rem;
+      padding: 0.5rem 1.2rem;
+      border: none;
+      border-radius: 8px;
+      background: linear-gradient(45deg, #56ccf2, #2f80ed);
+      color: white;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.3s ease;
+    }
+
+    #controls button:hover {
+      opacity: 0.9;
+      transform: translateY(-2px);
+    }
+
+    /* Video layout */
+    #videos {
+      display: flex;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }
+
+    video {
+      width: 320px;
+      height: 240px;
+      border-radius: 16px;
+      background: rgba(0, 0, 0, 0.4);
+      box-shadow: 0 4px 18px rgba(0, 0, 0, 0.6);
+      transition: transform 0.2s ease;
+    }
+
+    video:hover {
+      transform: scale(1.02);
+    }
+
+    footer {
+      position: absolute;
+      bottom: 1rem;
+      font-size: 0.85rem;
+      opacity: 0.8;
+      color: #eee;
+    }
+
+    @media (max-width: 768px) {
+      #controls input {
+        width: 180px;
+      }
+
+      video {
+        width: 90%;
+        height: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <h1>🔒 Ducx Private Chat</h1>
+
+  <div id="controls">
+    <input id="roomId" placeholder="Enter Room ID" />
+    <div>
+      <button onclick="createRoom()">Create Room</button>
+      <button onclick="joinRoom()">Join Room</button>
+    </div>
+  </div>
+
+  <div id="videos">
+    <video id="localVideo" autoplay muted playsinline></video>
+    <video id="remoteVideo" autoplay playsinline></video>
+  </div>
+
+  <footer>💬 Secured by FastAPI + WebRTC | © Ducx 2025</footer>
+
+  <script>
+    let localStream, pc, ws;
+    const localVideo = document.getElementById("localVideo");
+    const remoteVideo = document.getElementById("remoteVideo");
+    const roomInput = document.getElementById("roomId");
+
+    async function setupMedia() {
+      localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      localVideo.srcObject = localStream;
+    }
+
+    async function createRoom() {
+      const res = await fetch("http://127.0.0.1:8000/create-room", { method: "POST" });
+      const data = await res.json();
+      roomInput.value = data.room_id;
+      alert("Room created: " + data.room_id);
+      startConnection(data.room_id, true);
+    }
+
+    async function joinRoom() {
+      const room = roomInput.value.trim();
+      if (!room) return alert("Enter room ID first");
+      startConnection(room, false);
+    }
+
+    async function startConnection(roomId, isCaller) {
+      ws = new WebSocket(`ws://127.0.0.1:8000/ws/${roomId}`);
+      await setupMedia();
+
+      pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+      });
+
+      localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+
+      pc.ontrack = event => {
+        remoteVideo.srcObject = event.streams[0];
+      };
+
+      pc.onicecandidate = event => {
+        if (event.candidate) {
+          ws.send(JSON.stringify({ type: "candidate", candidate: event.candidate }));
+        }
+      };
+
+      ws.onmessage = async (event) => {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "offer" && !isCaller) {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          ws.send(JSON.stringify(answer));
+        } else if (msg.type === "answer" && isCaller) {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg));
+        } else if (msg.type === "candidate" && msg.candidate) {
+          try { await pc.addIceCandidate(msg.candidate); } catch(e) { console.error(e); }
+        }
+      };
+
+      if (isCaller) {
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.onopen = () => ws.send(JSON.stringify(offer));
+      }
+    }
+  </script>
+</body>
+</html>
